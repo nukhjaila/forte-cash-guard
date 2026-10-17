@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+.env
+backend/storage/uploads/*
+!backend/storage/uploads/.gitkeep
+backend/storage/models/*
+*.mov
+*.mp4
+*.sqlite
