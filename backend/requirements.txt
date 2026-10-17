@@ -2,6 +2,7 @@ absl-py==2.5.0
 anaconda-anon-usage @ file:///opt/miniconda3/conda-bld/anaconda-anon-usage_1764636648062/work
 anaconda-auth @ file:///home/task_177249124085225/croot/anaconda-cloud-auth-split_1772491269211/work
 anaconda-cli-base @ file:///home/task_177038556646156/croot/anaconda-cli-base_1770385830159/work
+annotated-doc==0.0.5
 annotated-types @ file:///home/task_176174487847081/conda-bld/annotated-types_1761744928471/work
 anyio @ file:///home/task_175862240717140/conda-bld/anyio_1758622421932/work
 archspec @ file:///home/task_175812491784513/conda-bld/archspec_1758124989039/work
@@ -22,6 +23,7 @@ contourpy==1.4.0
 cryptography @ file:///home/task_177247526678653/croot/cryptography-split_1772475308901/work
 cycler==0.12.1
 distro @ file:///work/perseverance-python-buildout/croot/distro_1728396110052/work
+fastapi==0.143.3
 flatbuffers==25.12.19
 fonttools==4.65.0
 frozendict @ file:///home/task_176175049677026/conda-bld/frozendict_1761750665451/work
@@ -48,6 +50,7 @@ msgpack @ file:///croot/msgpack-python_1750958623279/work
 numpy==2.5.3
 opencv-contrib-python==5.0.0.93
 opencv-python==5.0.0.93
+opentelemetry-api==1.45.1
 packaging @ file:///home/task_176104878999627/conda-bld/packaging_1761049078606/work
 pillow==12.3.0
 pkce @ file:///work/perseverance-python-buildout/croot/pkce_1728388093137/work
@@ -64,6 +67,7 @@ pyparsing==3.3.2
 PySocks @ file:///home/task_176175235884818/conda-bld/pysocks_1761753009495/work
 python-dateutil==2.9.0.post0
 python-dotenv @ file:///home/task_176855885656798/croot/python-dotenv_1768559688221/work
+python-multipart==0.0.32
 readchar @ file:///home/task_176061336965958/conda-bld/readchar_1760613437376/work
 requests @ file:///home/task_176235918788486/conda-bld/requests_1762359591632/work
 rich @ file:///home/task_176037557612320/conda-bld/rich_1760375632000/work
@@ -76,6 +80,7 @@ shellingham @ file:///home/task_176191203629823/conda-bld/shellingham_1761912204
 six==1.17.0
 sniffio @ file:///home/task_176432917442011/conda-bld/sniffio_1764329188237/work
 sounddevice==0.5.6
+starlette==1.8.0
 tomli @ file:///home/task_176829646049141/croot/tomli_1768296482268/work
 tomlkit @ file:///home/task_176289666312502/conda-bld/tomlkit_1762896676945/work
 tqdm @ file:///home/task_177139827237424/croot/tqdm_1771398701478/work
@@ -85,5 +90,6 @@ typer-slim==0.20.0
 typing-inspection @ file:///home/task_176061348700415/conda-bld/typing-inspection_1760614166875/work
 typing_extensions @ file:///croot/typing_extensions_1756280817316/work
 urllib3 @ file:///home/task_176781010304586/croot/urllib3_1767810267320/work
+uvicorn==0.54.0
 wheel==0.46.3
 zstandard @ file:///home/task_175818846949212/conda-bld/zstandard_1758189073015/work
