@@ -54,28 +54,15 @@ async def video_worker():
     while True:
         job_id, video_path = await JOB_QUEUE.get()
         try:
-            await asyncio.sleep(2)
-            sample_ts = 1.0
-            frame_b64 = await asyncio.to_thread(extract_frame_base64, video_path, sample_ts)
+            from backend.app.ai_engine.pipeline import analyze_video_with_qwen
+            ai_result = await asyncio.to_thread(analyze_video_with_qwen, video_path)
 
             JOBS_DB[job_id].update({
                 "status": "done",
-                "verdict": "violation",
-                "violations": [
-                    {
-                        "type": "Оставление наличных денег и ценностей без присмотра",
-                        "timecode_sec": sample_ts,
-                        "description": (
-                            "Визуально зафиксировано отсутствие кассира на рабочем месте при незакрытой кассе. "
-                            "Нормативный источник: Постановление Правления НБРК № 204 «Об утверждении Правил ведения кассовых операций "
-                            "и операций по инкассации банкнот, монет и ценностей в банках второго уровня...» (adilet.zan.kz)."
-                        ),
-                        "evidence_frames": [
-                            {"timestamp_sec": sample_ts, "image_base64": frame_b64}
-                        ],
-                    }
-                ],
+                "verdict": ai_result["verdict"],
+                "violations": ai_result["violations"],
             })
+            
         except Exception as e:
             print(f"Error processing {job_id}: {e}")
             JOBS_DB[job_id]["status"] = "failed"

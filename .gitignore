@@ -8,3 +8,4 @@ backend/storage/models/*
 *.mov
 *.mp4
 *.sqlite
+dataset/
