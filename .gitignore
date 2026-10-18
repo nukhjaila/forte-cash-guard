@@ -18,3 +18,4 @@ storage/
 *.pth
 *.ckpt
 *.mov
+cloudflared
