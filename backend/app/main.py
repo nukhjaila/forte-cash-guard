@@ -8,7 +8,9 @@ from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-API_KEY = os.getenv("X_API_KEY", "forte-secret-key-2026")
+API_KEY = os.getenv("X_API_KEY")
+if not API_KEY:
+    raise RuntimeError("Set the X_API_KEY environment variable before starting the server")
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "storage", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -134,7 +136,8 @@ async def web_ui():
             <div id="resultBox" class="hidden space-y-6"></div>
         </div>
         <script>
-            const API_KEY = "forte-secret-key-2026";
+            const API_KEY = sessionStorage.getItem('apiKey') || prompt('API key:') || '';
+            sessionStorage.setItem('apiKey', API_KEY);
             async function uploadVideo() {
                 const fileInput = document.getElementById('videoFile');
                 if (!fileInput.files.length) return alert('Выберите видеофайл!');
@@ -150,6 +153,12 @@ async def web_ui():
                     headers: { 'X-API-Key': API_KEY },
                     body: formData
                 });
+                if (!res.ok) {
+                    statusBox.className = "mt-4 text-sm font-medium text-red-600";
+                    statusBox.innerText = "Ошибка загрузки: неверный API-ключ или сервер недоступен.";
+                    sessionStorage.removeItem('apiKey');
+                    return;
+                }
                 const data = await res.json();
                 pollJob(data.job_id);
             }

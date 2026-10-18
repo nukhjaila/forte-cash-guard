@@ -9,3 +9,12 @@ backend/storage/models/*
 *.mp4
 *.sqlite
 dataset/
+cvat/
+data/
+models/
+storage/
+*.zip
+*.xlsx
+*.pth
+*.ckpt
+*.mov

@@ -1,158 +1,220 @@
+import os
+import re
 import cv2
 import base64
 import json
+import numpy as np
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, List
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen2.5vl:3b")
 
-RULES_PATH = "backend/app/knowledge_base/rules_kz.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "knowledge_base", "rules_kz.json")
+
 try:
     with open(RULES_PATH, "r", encoding="utf-8") as f:
         RULES_DB = json.load(f)
-except Exception:
+except Exception as e:
+    print(f"Warning: Could not load rules from {RULES_PATH}: {e}")
     RULES_DB = {}
 
-def extract_frames_for_vlm(video_path: str, fps_sample: float = 0.2) -> list:
-    """Реже берем кадры (например, 1 кадр в 5 секунд), чтобы не переполнять контекст токенов"""
+
+def make_grid_2x2(frames_subset: List[Dict[str, Any]]) -> str:
+    """Склеивает 4 кадра в легкий коллаж 2x2 (672x392)."""
+    cell_w, cell_h = 336, 196
+    cells = []
+    for item in frames_subset:
+        cell = cv2.resize(item["raw_frame"], (cell_w, cell_h))
+        cv2.rectangle(cell, (4, 4), (145, 28), (0, 0, 0), -1)
+        cv2.putText(
+            cell,
+            f"T={item['timestamp_sec']}s",
+            (8, 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2
+        )
+        cv2.rectangle(cell, (0, 0), (cell_w - 1, cell_h - 1), (255, 255, 255), 1)
+        cells.append(cell)
+
+    while len(cells) < 4:
+        cells.append(np.zeros((cell_h, cell_w, 3), dtype=np.uint8))
+
+    top = np.hstack([cells[0], cells[1]])
+    bottom = np.hstack([cells[2], cells[3]])
+    grid = np.vstack([top, bottom])
+
+    _, buf = cv2.imencode(".jpeg", grid, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return base64.b64encode(buf).decode("utf-8")
+
+
+def extract_key_frames(video_path: str, total_samples: int = 8) -> List[Dict[str, Any]]:
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+    if total_frames <= 0:
+        cap.release()
+        return []
+
+    start_f = int(total_frames * 0.05)
+    end_f = max(int(total_frames * 0.95), start_f + 1)
+    indices = np.linspace(start_f, min(end_f, total_frames - 1), total_samples, dtype=int)
+
     frames_data = []
-    frame_interval = max(int(fps / fps_sample), 1)
-    
-    current_frame = 0
-    while cap.isOpened():
+    for frame_idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
         ret, frame = cap.read()
-        if not ret:
-            break
-            
-        if current_frame % frame_interval == 0:
-            timestamp_sec = round(current_frame / fps, 1)
-            
-            # Уменьшаем разрешение кадров до 640x360, чтобы экономить токены и видеопамять!
-            frame_resized = cv2.resize(frame, (640, 360))
-            
-            annotated_frame = frame_resized.copy()
-            cv2.putText(
-                annotated_frame, 
-                f"Time: {timestamp_sec}s", 
-                (20, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 
-                0.8, 
-                (0, 0, 255), 
-                2
-            )
-            
-            _, buffer = cv2.imencode(".jpeg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-            b64_annotated = base64.b64encode(buffer).decode("utf-8")
-            
-            # Чистый оригинальный кадр для evidence_frames в хорошем качестве
-            _, clean_buffer = cv2.imencode(".jpeg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            b64_clean = base64.b64encode(clean_buffer).decode("utf-8")
-            
-            frames_data.append({
-                "timestamp_sec": timestamp_sec,
-                "annotated_b64": b64_annotated,
-                "clean_b64": b64_clean
-            })
-            
-        current_frame += 1
-        
+        if not ret or frame is None:
+            continue
+
+        timestamp_sec = round(int(frame_idx) / fps, 1)
+        _, clean_buffer = cv2.imencode(".jpeg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        b64_clean = base64.b64encode(clean_buffer).decode("utf-8")
+
+        frames_data.append({
+            "timestamp_sec": timestamp_sec,
+            "raw_frame": frame,
+            "clean_b64": b64_clean
+        })
+
     cap.release()
     return frames_data
 
-def analyze_video_with_qwen(video_path: str) -> Dict[str, Any]:
-    # Берем кадры с частотой раз в 5 секунд (fps_sample=0.2), чтобы ролик поместился в контекст
-    frames = extract_frames_for_vlm(video_path, fps_sample=0.2)
-    if not frames:
-        return {"verdict": "no_violation", "violations": []}
 
-    # Берем максимум 8 кадров на весь ролик
-    batch_frames = frames[:8] 
-    images_b64 = [f["annotated_b64"] for f in batch_frames]
+PROMPT_TEXT = """Look at this 2x2 image of a bank cash desk (each panel shows T=Xs).
+Normal cashier work (counting cash at desk, using laptop while seated, opening safe while putting cash inside, serving 1 client) is NOT a violation.
 
-    prompt = """
-Ты — профессиональный эксперт по банковской кассовой дисциплине и комплаенсу ForteBank. 
-Проанализируй кадры с камеры наблюдения на кассе (видео снято сверху).
-Проверь их на наличие нарушений правил НБРК:
-1. SAFE_AND_STORAGE_RULES: Открытый сейф, оставленный ключ, деньги не убраны в сейф, смешивание денег.
-2. DOOR_AND_ACCESS_CONTROL: Дверь открыта, посторонние лица, два клиента одновременно.
-3. CASH_COUNT_AND_AUTHENTICITY: Выдача неполной суммы, прием денег без пересчета.
-4. ID_VERIFICATION_MISSING: Прием ценностей без удостоверения личности.
-5. PERSONAL_ITEMS_AND_FOOD: Личные вещи или еда/кофе на рабочем столе.
-6. INCASSATION_BAG_UNATTENDED: Инкассаторская сумка без присмотра.
-7. WORKSTATION_AND_EQUIPMENT_SECURITY: Незаблокированный ноутбук при уходе.
+Check if there is an OBVIOUS violation from this list:
+- SAFE_AND_STORAGE_RULES (cashier left room leaving money/stamps on desk; safe door left open after leaving; key left in safe lock; mixing two clients' money)
+- DOOR_AND_ACCESS_CONTROL (room entrance door left open; two clients inside at once; stranger peeking in open door)
+- CASH_COUNT_AND_AUTHENTICITY (client walked out while cashier counts money; putting money from bag to safe without counting)
+- ID_VERIFICATION_MISSING (accepting cash or bag without checking ID card)
+- PERSONAL_ITEMS_AND_FOOD (drinking coffee cup near cash; personal clutter on desk)
+- INCASSATION_BAG_UNATTENDED (cashier walked out leaving incassation bag unattended)
+- WORKSTATION_AND_EQUIPMENT_SECURITY (cashier walked out leaving laptop unlocked)
 
-Таймкоды указаны на изображениях (Time: Хs).
-Верни ответ строго в формате JSON без лишнего текста:
-{
-  "verdict": "violation" или "no_violation",
-  "violations": [
-    {
-      "rule_code": "код правила из списка выше или none",
-      "timecode_sec": точное число секунд из штампа,
-      "description": "описание нарушения"
+Reply in EXACTLY 4 short lines (no JSON, no markdown):
+VERDICT: no_violation OR violation
+RULE: NONE OR one code from list above
+TIME: number of seconds from T=Xs
+DESC: одно короткое предложение на русском языке, что видно на кадре"""
+
+
+def parse_four_lines(text: str) -> Dict[str, Any]:
+    verdict = "no_violation"
+    rule_code = "NONE"
+    time_sec = 0.0
+    desc = ""
+
+    for line in text.splitlines():
+        line_clean = line.strip()
+        if line_clean.upper().startswith("VERDICT:"):
+            val = line_clean.split(":", 1)[1].strip().lower()
+            if "violation" in val and "no_" not in val:
+                verdict = "violation"
+        elif line_clean.upper().startswith("RULE:"):
+            val = line_clean.split(":", 1)[1].strip().upper()
+            for known_code in RULES_DB.keys():
+                if known_code in val:
+                    rule_code = known_code
+                    break
+        elif line_clean.upper().startswith("TIME:"):
+            val = line_clean.split(":", 1)[1].strip()
+            nums = re.findall(r"\d+(?:\.\d+)?", val)
+            if nums:
+                time_sec = float(nums[0])
+        elif line_clean.upper().startswith("DESC:"):
+            desc = line_clean.split(":", 1)[1].strip()
+
+    return {
+        "verdict": verdict,
+        "rule_code": rule_code,
+        "timecode_sec": time_sec,
+        "description_ru": desc
     }
-  ]
-}
-"""
 
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": "qwen2.5vl:3b",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                        "images": images_b64
-                    }
-                ],
-                "format": "json",
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,
-                    "num_ctx": 16384  # Увеличиваем контекстное окно Ollama до 16К токенов!
-                }
-            },
-            timeout=180
-        )
-        
-        resp_data = response.json()
-        print("Ollama raw response:", resp_data)
-        
-        message_obj = resp_data.get("message", {})
-        result_content = message_obj.get("content", "{}")
-        
-        parsed_res = json.loads(result_content)
-        
-        final_violations = []
-        for v in parsed_res.get("violations", []):
-            rule_code = v.get("rule_code")
-            rule_info = RULES_DB.get(rule_code, {})
-            
-            target_ts = v.get("timecode_sec", 0.0)
-            matched_frame = next((f for f in frames if abs(f["timestamp_sec"] - target_ts) < 2.0), frames[0])
-            
-            violation_type = rule_info.get("type", "Нарушение кассовой дисциплины")
-            normative = rule_info.get("normative_source", "Постановление Правления НБРК № 231 (adilet.zan.kz)")
-            
-            final_violations.append({
-                "type": violation_type,
-                "timecode_sec": target_ts,
-                "description": f"{v.get('description', '')}. Нормативный источник: {normative}",
-                "evidence_frames": [
-                    {"timestamp_sec": matched_frame["timestamp_sec"], "image_base64": matched_frame["clean_b64"]}
-                ]
-            })
 
+def analyze_grid_with_ollama(grid_b64: str) -> Dict[str, Any]:
+    # Используем /api/generate БЕЗ параметра format, чтобы избежать бага token repeat limit в Ollama
+    response = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": MODEL_NAME,
+            "prompt": PROMPT_TEXT,
+            "images": [grid_b64],
+            "stream": False,
+            "options": {
+                "temperature": 0.4,
+                "repeat_penalty": 1.3,
+                "repeat_last_n": 64,
+                "top_k": 20,
+                "top_p": 0.85,
+                "num_ctx": 4096,
+                "num_predict": 120
+            }
+        },
+        timeout=120
+    )
+    resp_data = response.json()
+    if "error" in resp_data:
+        print("Ollama error:", resp_data["error"])
+        return {}
+
+    raw_content = resp_data.get("response", "").strip()
+    print("Ollama output:\n", raw_content)
+    return parse_four_lines(raw_content)
+
+
+def analyze_video_with_qwen(video_path: str) -> Dict[str, Any]:
+    frames = extract_key_frames(video_path, total_samples=8)
+    if not frames:
+        raise ValueError("Не удалось извлечь кадры из видеофайла.")
+
+    halves = [frames[:4], frames[4:]]
+    best_violation = None
+
+    for subset in halves:
+        if not subset:
+            continue
+        grid_b64 = make_grid_2x2(subset)
+        res = analyze_grid_with_ollama(grid_b64)
+
+        if res.get("verdict") == "violation" and res.get("rule_code", "NONE") != "NONE":
+            best_violation = res
+            break
+
+    if not best_violation:
         return {
-            "verdict": parsed_res.get("verdict", "no_violation"),
-            "violations": final_violations
+            "verdict": "no_violation",
+            "violations": []
         }
-        
-    except Exception as e:
-        print(f"Error in VLM pipeline: {e}")
-        return {"verdict": "no_violation", "violations": []}
+
+    rule_code = best_violation["rule_code"]
+    rule_info = RULES_DB.get(rule_code, {})
+    target_ts = float(best_violation.get("timecode_sec") or frames[0]["timestamp_sec"])
+
+    matched_frame = min(frames, key=lambda f: abs(f["timestamp_sec"] - target_ts))
+    violation_type = rule_info.get("type", f"Нарушение кассовой дисциплины ({rule_code})")
+    normative = rule_info.get("normative_source", "Постановление Правления НБРК № 231 (adilet.zan.kz)")
+    desc_ru = best_violation.get("description_ru") or "Зафиксировано визуальное нарушение кассовой дисциплины"
+
+    return {
+        "verdict": "violation",
+        "violations": [
+            {
+                "type": violation_type,
+                "timecode_sec": matched_frame["timestamp_sec"],
+                "description": f"{desc_ru}. Нормативный источник: {normative}",
+                "evidence_frames": [
+                    {
+                        "timestamp_sec": matched_frame["timestamp_sec"],
+                        "image_base64": matched_frame["clean_b64"]
+                    }
+                ]
+            }
+        ]
+    }
