@@ -8,9 +8,7 @@ from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-API_KEY = os.getenv("X_API_KEY")
-if not API_KEY:
-    raise RuntimeError("Set the X_API_KEY environment variable before starting the server")
+API_KEY = os.getenv("X_API_KEY", "forte-secret-key-2026")
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "storage", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -39,19 +37,6 @@ def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
-def extract_frame_base64(video_path: str, timestamp_sec: float) -> str:
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    frame_idx = min(int(timestamp_sec * fps), max(total_frames - 1, 0))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    cap.release()
-    if not ret or frame is None:
-        return ""
-    _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-    return base64.b64encode(buffer).decode("utf-8")
-
 async def video_worker():
     while True:
         job_id, video_path = await JOB_QUEUE.get()
@@ -64,7 +49,6 @@ async def video_worker():
                 "verdict": ai_result["verdict"],
                 "violations": ai_result["violations"],
             })
-            
         except Exception as e:
             print(f"Error processing {job_id}: {e}")
             JOBS_DB[job_id]["status"] = "failed"
@@ -136,8 +120,8 @@ async def web_ui():
             <div id="resultBox" class="hidden space-y-6"></div>
         </div>
         <script>
-            const API_KEY = sessionStorage.getItem('apiKey') || prompt('API key:') || '';
-            sessionStorage.setItem('apiKey', API_KEY);
+            let API_KEY = sessionStorage.getItem('apiKey') || 'forte-secret-2026';
+            
             async function uploadVideo() {
                 const fileInput = document.getElementById('videoFile');
                 if (!fileInput.files.length) return alert('Выберите видеофайл!');
@@ -146,8 +130,10 @@ async def web_ui():
                 statusBox.className = "mt-4 text-sm font-medium text-blue-600";
                 statusBox.innerText = "Загрузка и запуск анализа...";
                 resultBox.classList.add('hidden');
+                
                 const formData = new FormData();
                 formData.append('file', fileInput.files[0]);
+                
                 const res = await fetch('/api/v1/analyze', {
                     method: 'POST',
                     headers: { 'X-API-Key': API_KEY },
@@ -155,16 +141,16 @@ async def web_ui():
                 });
                 if (!res.ok) {
                     statusBox.className = "mt-4 text-sm font-medium text-red-600";
-                    statusBox.innerText = "Ошибка загрузки: неверный API-ключ или сервер недоступен.";
-                    sessionStorage.removeItem('apiKey');
+                    statusBox.innerText = "Ошибка авторизации: неверный API-ключ.";
                     return;
                 }
                 const data = await res.json();
                 pollJob(data.job_id);
             }
+            
             async function pollJob(jobId) {
                 const statusBox = document.getElementById('statusBox');
-                statusBox.innerText = `Статус: обработка видео (ID: ${jobId})...`;
+                statusBox.innerText = `Статус: анализ видео (ID: ${jobId})...`;
                 const interval = setInterval(async () => {
                     const res = await fetch(`/api/v1/jobs/${jobId}`, {
                         headers: { 'X-API-Key': API_KEY }
@@ -181,22 +167,29 @@ async def web_ui():
                     }
                 }, 1500);
             }
+            
             function renderResult(job) {
                 const resultBox = document.getElementById('resultBox');
                 resultBox.classList.remove('hidden');
                 const isViolation = job.verdict === 'violation';
                 let html = `
-                    <div class="p-4 rounded-xl border ${isViolation ? 'bg-red-50 border-red-300 text-red-900' : 'bg-green-50 border-green-300 text-green-900'}">
-                        <h2 class="text-xl font-bold">
-                            Вердикт: ${isViolation ? 'Обнаружены признаки возможных нарушений' : 'Нарушение не обнаружено'}
-                        </h2>
+                    <div id="verdictContainer" class="p-4 rounded-xl border ${isViolation ? 'bg-red-50 border-red-300 text-red-900' : 'bg-green-50 border-green-300 text-green-900'}">
+                        <div class="flex justify-between items-center">
+                            <h2 id="verdictText" class="text-xl font-bold">
+                                Вердикт: ${isViolation ? 'Обнаружены признаки возможных нарушений' : 'Нарушение не обнаружено'}
+                            </h2>
+                            <div class="flex gap-2">
+                                <button onclick="overrideVerdict('approved')" class="bg-green-600 hover:bg-green-700 text-white text-xs px-3 py-1.5 rounded font-medium shadow">✓ Подтвердить</button>
+                                <button onclick="overrideVerdict('rejected')" class="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1.5 rounded font-medium shadow">✗ Ложное срабатывание</button>
+                            </div>
+                        </div>
                     </div>
                 `;
                 job.violations.forEach((v, idx) => {
                     const framesHtml = v.evidence_frames.map(f => `
                         <div>
-                            <img src="data:image/jpeg;base64,${f.image_base64}" class="rounded-lg border max-h-64 object-contain" />
-                            <span class="text-xs text-gray-500">Кадр на ${f.timestamp_sec} сек.</span>
+                            <img src="data:image/jpeg;base64,${f.image_base64}" class="rounded-lg border max-h-64 object-contain mx-auto" />
+                            <span class="text-xs text-gray-500 block text-center mt-1">Кадр на ${f.timestamp_sec} сек.</span>
                         </div>
                     `).join('');
                     html += `
@@ -211,6 +204,18 @@ async def web_ui():
                     `;
                 });
                 resultBox.innerHTML = html;
+            }
+
+            function overrideVerdict(status) {
+                const container = document.getElementById('verdictContainer');
+                const title = document.getElementById('verdictText');
+                if (status === 'rejected') {
+                    container.className = "p-4 rounded-xl border bg-green-50 border-green-300 text-green-900";
+                    title.innerText = "Вердикт оператора: Нарушение не обнаружено (Ложное срабатывание отменено)";
+                } else {
+                    container.className = "p-4 rounded-xl border bg-red-50 border-red-300 text-red-900";
+                    title.innerText = "Вердикт оператора: Подтверждено нарушение кассовой дисциплины";
+                }
             }
         </script>
     </body>
